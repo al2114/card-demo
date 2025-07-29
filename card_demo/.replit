@@ -1,0 +1,20 @@
+# Replit configuration for Flutter Web
+modules = ["flutter"]
+
+[nix]
+channel = "stable-23_11"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[deployment]
+run = ["sh", "-c", "flutter build web --release && cd build/web && python3 -m http.server 5000"]
+
+[languages]
+
+[languages.flutter]
+pattern = "**/*.dart"
+
+[languages.flutter.languageServer]
+start = "dart language-server --protocol=lsp" 
