@@ -431,6 +431,7 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
       _isMomentumScrolling = false;
       _momentumTiltDirection = 0.0;
       _touchInsideActiveRegion = true; // Reset touch region tracking
+      _hoveredCard = -1; // Clear hover state when touch starts
     });
 
     if (_isStacked) {
@@ -452,6 +453,7 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
       _isMomentumScrolling = false;
       _momentumTiltDirection = 0.0;
       _touchInsideActiveRegion = true; // Reset touch region tracking
+      _hoveredCard = -1; // Clear hover state when pan starts
     });
 
     if (_isStacked) {
@@ -536,10 +538,14 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
         final absVelocity = _velocity.abs();
 
         if (absVelocity > _momentumThreshold) {
-          // Start momentum scrolling
+          // Start momentum scrolling (hover state will be cleared in _startMomentumScroll)
           _startMomentumScroll(_velocity);
         } else {
-          // Traditional snap behavior for slow swipes
+          // Traditional snap behavior for slow swipes - clear hover state
+          setState(() {
+            _hoveredCard = -1; // Clear hover state for non-momentum swipes
+          });
+
           final shouldSnap = dragOffset.dx.abs() > _swipeSnapThreshold;
 
           if (shouldSnap) {
@@ -584,6 +590,7 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
         _swipeOffset = 0.0;
         _momentumTiltDirection = 0.0; // Clear any momentum tilt
         _touchInsideActiveRegion = false; // Set to false when cancelled
+        _hoveredCard = -1; // Clear hover state when pan is cancelled
       });
 
       if (_isStacked || _isExploded) {
@@ -602,6 +609,7 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
       // Set tilt direction based on initial velocity direction
       _momentumTiltDirection =
           initialVelocity < 0 ? -0.5 : 0.5; // Subtle directional tilt
+      _hoveredCard = -1; // Clear hover state during momentum scrolling
     });
 
     // Apply dampening to initial velocity to make momentum less aggressive
@@ -633,6 +641,7 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
         _swipeOffset = 0.0;
         _velocity = 0.0;
         _momentumTiltDirection = 0.0; // Clear momentum tilt
+        _hoveredCard = -1; // Clear hover state when momentum ends
       });
       _calculateCardPositions();
       return;
@@ -848,6 +857,7 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
           child: GestureDetector(
             onTap: () => _handleCardTap(index),
             onTapDown: _handleTapDown,
+            onPanStart: _handlePanStart,
             onPanUpdate: _handlePanUpdate,
             onPanEnd: _handlePanEnd,
             onPanCancel: _handlePanCancel,
