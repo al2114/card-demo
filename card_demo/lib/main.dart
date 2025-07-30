@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'dart:math' as math;
 
 void main() {
@@ -58,15 +59,19 @@ class PhysicsCardDemo extends StatefulWidget {
   State<PhysicsCardDemo> createState() => _PhysicsCardDemoState();
 }
 
-class _PhysicsCardDemoState extends State<PhysicsCardDemo>
-    with TickerProviderStateMixin {
+class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
   // Card state management
   bool _isStacked = false;
   bool _isExpanded = false;
   bool _isExploded = false;
   bool _isHovering = false;
   int _activeCard = 0;
+  int _hoveredCard = -1; // Track which card is being hovered in expanded view
   Size _screenSize = Size.zero;
+
+  // Track if initial animation should run
+  bool _shouldAnimateInitialAppearance = true;
+  bool _hasCompletedInitialDelay = false;
 
   // Card data
   final List<Color> _cardColors = [
@@ -85,9 +90,21 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo>
   void initState() {
     super.initState();
 
-    // Auto-transition to stacked after a delay
-    Future.delayed(const Duration(milliseconds: 1000), () {
+    // First, end the pop animation after 400ms
+    Future.delayed(const Duration(milliseconds: 400), () {
       if (mounted) {
+        setState(() {
+          _shouldAnimateInitialAppearance = false;
+        });
+      }
+    });
+
+    // Then after additional delay (total 2.5 seconds), transition to stacked
+    Future.delayed(const Duration(milliseconds: 1200), () {
+      if (mounted) {
+        setState(() {
+          _hasCompletedInitialDelay = true;
+        });
         _transitionToStacked();
       }
     });
@@ -105,13 +122,23 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo>
         final relativePosition =
             i - _activeCard; // Position relative to active card
 
+        final baseY = center.dy;
+        final hoverOffset =
+            (i == _hoveredCard && _isExpanded)
+                ? -8.0
+                : 0.0; // Move up 8px on hover
         _cardPositions[i] = Offset(
           center.dx + (relativePosition * spacing),
-          center.dy,
+          baseY + hoverOffset,
         );
         _cardRotations[i] =
             i == _activeCard ? 0.0 : relativePosition.sign * 0.15;
-        _cardScales[i] = i == _activeCard ? 1.0 : 0.85;
+        // Apply hover effect in expanded view
+        if (i == _hoveredCard && _isExpanded) {
+          _cardScales[i] = i == _activeCard ? 1.1 : 0.95; // Pop effect
+        } else {
+          _cardScales[i] = i == _activeCard ? 1.0 : 0.85;
+        }
       } else if (_isExploded) {
         // Exploded radial burst from center
         final angles = [
@@ -217,11 +244,23 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo>
     }
   }
 
-  void _handleCardHover(bool hovering) {
-    if (_isStacked && hovering) {
-      _transitionToExploded();
-    } else if (_isExploded && !hovering) {
-      _transitionToStacked();
+  void _handleCardHover(bool hovering, int cardIndex) {
+    if (_isExpanded) {
+      // In expanded view, track individual card hover for pop effect
+      setState(() {
+        _hoveredCard = hovering ? cardIndex : -1;
+      });
+      _calculateCardPositions(); // Recalculate positions for hover movement
+    } else {
+      // For other views, use global hover state
+      setState(() {
+        _isHovering = hovering;
+      });
+      if (_isStacked && hovering) {
+        _transitionToExploded();
+      } else if (_isExploded && !hovering) {
+        _transitionToStacked();
+      }
     }
   }
 
@@ -243,6 +282,36 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo>
     }
   }
 
+  // Helper methods for hover effects
+  double _getCardShadowOpacity(int index) {
+    // Only apply hover shadow in scattered state, not stacked (to avoid cumulative darkness)
+    if (!_isExpanded && !_isStacked && !_isExploded && _isHovering) {
+      return 0.25; // Lighter hover shadow for scattered state
+    }
+    return 0.15; // Lighter default shadow
+  }
+
+  double _getCardShadowBlur(int index) {
+    if (!_isExpanded && !_isStacked && !_isExploded && _isHovering) {
+      return 18.0; // Hover blur for scattered state
+    }
+    return 12.0; // Default blur
+  }
+
+  double _getCardShadowOffset(int index) {
+    if (!_isExpanded && !_isStacked && !_isExploded && _isHovering) {
+      return 6.0; // Hover offset for scattered state
+    }
+    return 3.0; // Default offset
+  }
+
+  double _getCardShadowSpread(int index) {
+    if (!_isExpanded && !_isStacked && !_isExploded && _isHovering) {
+      return 1.0; // Hover spread for scattered state
+    }
+    return 0.0; // Default spread
+  }
+
   @override
   Widget build(BuildContext context) {
     return KeyboardListener(
@@ -262,16 +331,18 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo>
           final newSize = constraints.biggest;
           if (_screenSize != newSize) {
             _screenSize = newSize;
+            _calculateCardPositions(); // Calculate positions immediately
             WidgetsBinding.instance.addPostFrameCallback((_) {
-              _calculateCardPositions();
-              setState(() {});
+              setState(() {}); // Just trigger a rebuild
             });
           }
 
           return Stack(
             children: [
               // Cards with physics-based animations
-              for (int i = 0; i < 5; i++) _buildAnimatedCard(i),
+              if (_screenSize !=
+                  Size.zero) // Only show cards when positions are calculated
+                ..._buildCardsWithZOrder(),
 
               // State indicator
               Positioned(
@@ -351,57 +422,107 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo>
     );
   }
 
+  List<Widget> _buildCardsWithZOrder() {
+    // Always render cards in their natural order to maintain position consistency
+    return List.generate(5, (index) => _buildAnimatedCard(index));
+  }
+
+  int _getCardZIndex(int index) {
+    // Return z-index priority (higher = on top)
+    if (_isExpanded && index == _activeCard) {
+      return 3; // Active card on top in expanded view
+    } else if (index == _hoveredCard && _hoveredCard != -1) {
+      return 2; // Hovered card in middle layer
+    } else {
+      return 1; // Inactive cards on bottom
+    }
+  }
+
   Widget _buildAnimatedCard(int index) {
     // Subtle spring animation curves
     const springCurve = Curves.easeOutBack;
     const duration = Duration(milliseconds: 600);
 
+    final left = _cardPositions[index].dx - 60;
+    final top = _cardPositions[index].dy - 60;
+    final zIndex = _getCardZIndex(index);
+
     return AnimatedPositioned(
       duration: duration,
       curve: springCurve,
-      left: _cardPositions[index].dx - 60,
-      top: _cardPositions[index].dy - 60,
-      child: MouseRegion(
-        onEnter: (_) {
-          setState(() => _isHovering = true);
-          _handleCardHover(true);
-        },
-        onExit: (_) {
-          setState(() => _isHovering = false);
-          _handleCardHover(false);
-        },
-        child: GestureDetector(
-          onTap: () => _handleCardTap(index),
-          child: AnimatedContainer(
-            duration: duration,
-            curve: springCurve,
-            transform:
-                Matrix4.identity()
-                  ..scale(_cardScales[index])
-                  ..rotateZ(_cardRotations[index]),
-            child: Container(
-              width: 120,
-              height: 120,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    _cardColors[index],
-                    _cardColors[index].withOpacity(0.8),
-                  ],
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(_isHovering ? 0.3 : 0.2),
-                    blurRadius: _isHovering ? 20 : 15,
-                    offset: Offset(0, _isHovering ? 8 : 4),
-                    spreadRadius: _isHovering ? 2 : 0,
-                  ),
-                ],
-              ),
-              child: _buildCardContent(index),
+      left: left,
+      top: top,
+      child: Transform.translate(
+        offset: Offset(0, -zIndex * 0.1), // Subtle z-offset for layering
+        child: MouseRegion(
+          onEnter: (_) {
+            _handleCardHover(true, index);
+          },
+          onExit: (_) {
+            _handleCardHover(false, index);
+          },
+          child: GestureDetector(
+            onTap: () => _handleCardTap(index),
+            child: AnimatedContainer(
+              duration: duration,
+              curve: springCurve,
+              transform:
+                  Matrix4.identity()
+                    ..scale(_cardScales[index])
+                    ..rotateZ(_cardRotations[index]),
+              child: Container(
+                    width: 120,
+                    height: 120,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          _cardColors[index],
+                          _cardColors[index].withOpacity(0.8),
+                        ],
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(
+                            _getCardShadowOpacity(index),
+                          ),
+                          blurRadius: _getCardShadowBlur(index),
+                          offset: Offset(0, _getCardShadowOffset(index)),
+                          spreadRadius: _getCardShadowSpread(index),
+                        ),
+                      ],
+                    ),
+                    child: Stack(
+                      children: [
+                        _buildCardContent(index),
+                        // Light up effect on hover in expanded view
+                        if (_isExpanded && index == _hoveredCard)
+                          Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                              gradient: LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  Colors.white.withOpacity(0.3),
+                                  Colors.white.withOpacity(0.1),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  )
+                  .animate(target: _shouldAnimateInitialAppearance ? 0 : 1)
+                  .scale(
+                    begin: const Offset(0.0, 0.0),
+                    end: const Offset(1.0, 1.0),
+                    duration: 400.ms,
+                    curve: Curves.easeOutBack,
+                  )
+                  .fadeIn(duration: 300.ms, curve: Curves.easeOut),
             ),
           ),
         ),
