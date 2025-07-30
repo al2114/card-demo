@@ -69,6 +69,46 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
   int _hoveredCard = -1; // Track which card is being hovered in expanded view
   Size _screenSize = Size.zero;
 
+  // Touch interaction and rubber band effect tracking
+  bool _isTouchActive = false;
+  Offset _touchStartPosition = Offset.zero;
+  Offset _currentTouchPosition = Offset.zero;
+  Offset _rubberBandOffset = Offset.zero;
+  final double _rubberBandStrength =
+      0.05; // How much cards follow the drag (0-1) - very strong resistance
+  final double _rubberBandDamping = 0.1; // How quickly they return to position
+
+  // Swipe scrolling for expanded state
+  double _swipeOffset = 0.0;
+  final double _swipeRubberBandStrength =
+      0.6; // How much cards follow horizontal swipe
+  final double _swipeSnapThreshold =
+      70.0; // Distance needed to snap to next/prev card
+
+  // Momentum scrolling variables with improved dampening
+  double _lastPanUpdateTime = 0.0;
+  double _velocity = 0.0;
+  final double _momentumThreshold =
+      1200.0; // Minimum velocity for momentum scroll (higher = harder to trigger)
+  final double _momentumDamping =
+      0.8; // How much to reduce initial velocity (0-1, higher = more dampening)
+  final double _friction =
+      0.2; // Momentum decay factor per frame (lower = faster decay)
+  final double _cardSpacing =
+      140.0; // Distance between cards for momentum calculation
+  final int _maxMomentumCards =
+      3; // Maximum cards to scroll in one momentum swipe
+  final int _momentumDelayMs =
+      200; // Delay between card transitions in milliseconds
+  bool _isMomentumScrolling = false;
+
+  // Momentum tilt direction for visual feedback
+  double _momentumTiltDirection = 0.0; // -1 for left, 1 for right, 0 for none
+
+  // Touch region tracking for hover cancellation
+  final double _touchCancelThreshold =
+      200.0; // Distance in pixels to cancel hover effect
+  bool _touchInsideHoverRegion = true;
   // Track if initial animation should run
   bool _shouldAnimateInitialAppearance = true;
   bool _hasCompletedInitialDelay = false;
@@ -128,15 +168,61 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
                 ? -8.0
                 : 0.0; // Move up 8px on hover
         _cardPositions[i] = Offset(
-          center.dx + (relativePosition * spacing),
+          center.dx + (relativePosition * spacing) + _swipeOffset,
           baseY + hoverOffset,
         );
-        _cardRotations[i] =
+        // Base rotation for inactive cards
+        final baseRotation =
             i == _activeCard ? 0.0 : relativePosition.sign * 0.15;
-        // Apply hover effect in expanded view
+
+        // Add swipe tilt when dragging or momentum tilt when scrolling
+        double swipeTilt = 0.0;
+
+        if (_isTouchActive) {
+          // Active touch tilt based on drag offset
+          swipeTilt = (_swipeOffset / 150.0) * 0.15;
+        } else if (_isMomentumScrolling) {
+          // Momentum tilt in the direction of movement
+          swipeTilt =
+              _momentumTiltDirection * 0.08; // Subtle tilt during momentum
+        }
+
+        _cardRotations[i] = baseRotation + swipeTilt;
+
+        // Dynamic scaling based on swipe position and proximity to becoming active
         if (i == _hoveredCard && _isExpanded) {
+          // Hover effect takes priority
           _cardScales[i] = i == _activeCard ? 1.1 : 0.95; // Pop effect
+        } else if (_isTouchActive && _swipeOffset.abs() > 10) {
+          // Calculate dynamic scale based on swipe progress
+          final swipeDirection =
+              _swipeOffset < 0 ? -1 : 1; // -1 for left, 1 for right
+          final nextActiveCard =
+              swipeDirection < 0
+                  ? (_activeCard + 1) %
+                      5 // Swiping left, next card
+                  : (_activeCard - 1 + 5) % 5; // Swiping right, previous card
+
+          // Calculate transition progress (0-1) based on swipe distance
+          final maxSwipeForFullTransition =
+              140.0; // Distance for full scale transition
+          final swipeProgress = (_swipeOffset.abs() / maxSwipeForFullTransition)
+              .clamp(0.0, 1.0);
+
+          if (i == _activeCard) {
+            // Current active card shrinks as we swipe away
+            final targetScale = 0.85;
+            _cardScales[i] = 1.0 - ((1.0 - targetScale) * swipeProgress);
+          } else if (i == nextActiveCard) {
+            // Next active card grows as we swipe toward it
+            final targetScale = 1.0;
+            _cardScales[i] = 0.85 + ((targetScale - 0.85) * swipeProgress);
+          } else {
+            // Other cards remain at inactive scale
+            _cardScales[i] = 0.85;
+          }
         } else {
+          // Default static scale
           _cardScales[i] = i == _activeCard ? 1.0 : 0.85;
         }
       } else if (_isExploded) {
@@ -165,14 +251,64 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
           -0.15, // Card 4: more left tilt
         ];
 
-        _cardPositions[i] =
+        // Calculate base exploded position
+        final basePosition =
             center +
             Offset(
               math.cos(angles[i]) * distances[i],
               math.sin(angles[i]) * distances[i],
             );
+
+        // Add individual rubber band effect when touch is active
+        if (_isTouchActive) {
+          // Calculate individual resistance based on card position relative to drag direction
+          final cardDirection = Offset(
+            math.cos(angles[i]),
+            math.sin(angles[i]),
+          );
+
+          // Calculate drag direction (normalized)
+          final dragMagnitude = _rubberBandOffset.distance;
+          final dragDirection =
+              dragMagnitude > 0
+                  ? Offset(
+                    _rubberBandOffset.dx / dragMagnitude,
+                    _rubberBandOffset.dy / dragMagnitude,
+                  )
+                  : Offset.zero;
+
+          // Calculate alignment (-1 = opposite direction, 1 = same direction)
+          final alignment =
+              (cardDirection.dx * dragDirection.dx) +
+              (cardDirection.dy * dragDirection.dy);
+
+          // Calculate resistance multiplier (higher alignment = less resistance)
+          // Range: 0.15 (high resistance) to 1.0 (low resistance)
+          // Cards opposite to drag direction move much less, cards in same direction move more
+          final resistanceMultiplier = 0.15 + (0.85 * ((alignment + 1) / 2));
+
+          // Apply individual rubber band offset
+          final individualOffset = _rubberBandOffset * resistanceMultiplier;
+          _cardPositions[i] = basePosition + individualOffset;
+        } else {
+          _cardPositions[i] = basePosition;
+        }
+
         _cardRotations[i] = organicRotations[i];
-        _cardScales[i] = 0.93;
+
+        // Add subtle scale effect during rubber band interaction
+        if (_isTouchActive) {
+          // Use individual card's movement for scale effect
+          final individualMovement =
+              (_cardPositions[i] - basePosition).distance;
+          final scaleEffect =
+              1.0 +
+              (individualMovement *
+                  0.002); // Subtle scale increase based on individual movement
+          _cardScales[i] = 0.93 * scaleEffect;
+        } else {
+          _cardScales[i] = 0.93;
+        }
       } else if (_isStacked) {
         // Stacked layout with peek and subtle rotation
         final baseOffset = Offset(i * 3.0, -i * 3.0);
@@ -282,6 +418,219 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
     }
   }
 
+  // Touch gesture handlers for rubber band effect in exploded state and swipe navigation in expanded state
+  void _handlePanStart(DragStartDetails details) {
+    setState(() {
+      _isTouchActive = true;
+      _touchStartPosition = details.globalPosition;
+      _currentTouchPosition = details.globalPosition;
+      _rubberBandOffset = Offset.zero;
+      _swipeOffset = 0.0;
+      _velocity = 0.0;
+      _lastPanUpdateTime = 0.0;
+      _isMomentumScrolling = false;
+      _momentumTiltDirection = 0.0;
+      _touchInsideHoverRegion = true; // Reset touch region tracking
+    });
+
+    if (_isStacked) {
+      _handleCardHover(true, -1); // Trigger exploded state
+    }
+  }
+
+  void _handlePanUpdate(DragUpdateDetails details) {
+    if (_isTouchActive && !_isMomentumScrolling) {
+      setState(() {
+        _currentTouchPosition = details.globalPosition;
+      });
+
+      if (_isExploded) {
+        // Handle rubber band effect for exploded state
+        setState(() {
+          // Calculate drag offset from initial touch position
+          final dragOffset = _currentTouchPosition - _touchStartPosition;
+          final dragDistance = dragOffset.distance;
+
+          // Check if touch is still within hover region
+          final stillInRegion = dragDistance <= _touchCancelThreshold;
+
+          if (_touchInsideHoverRegion != stillInRegion) {
+            _touchInsideHoverRegion = stillInRegion;
+
+            if (!stillInRegion) {
+              // Moved out of hover region - cancel exploded state
+              _handleCardHover(false, -1);
+            }
+          }
+
+          // Apply rubber band effect only if still in region
+          if (_touchInsideHoverRegion) {
+            _rubberBandOffset = Offset(
+              dragOffset.dx * _rubberBandStrength,
+              dragOffset.dy * _rubberBandStrength,
+            );
+          } else {
+            _rubberBandOffset = Offset.zero;
+          }
+        });
+        _calculateCardPositions(); // Recalculate positions with rubber band offset
+      } else if (_isExpanded) {
+        // Handle swipe scrolling for expanded state
+        setState(() {
+          final dragOffset = _currentTouchPosition - _touchStartPosition;
+          final currentTime = DateTime.now().millisecondsSinceEpoch.toDouble();
+
+          // Calculate velocity for momentum scrolling
+          if (_lastPanUpdateTime > 0) {
+            final deltaTime = currentTime - _lastPanUpdateTime;
+            if (deltaTime > 0) {
+              final deltaX = details.delta.dx;
+              _velocity = deltaX / deltaTime * 1000; // pixels per second
+            }
+          }
+          _lastPanUpdateTime = currentTime;
+
+          // Apply rubber band effect to horizontal swipe
+          _swipeOffset = dragOffset.dx * _swipeRubberBandStrength;
+        });
+        _calculateCardPositions(); // Recalculate positions with swipe offset
+      }
+    }
+  }
+
+  void _handlePanEnd(DragEndDetails details) {
+    if (_isTouchActive && !_isMomentumScrolling) {
+      final dragOffset = _currentTouchPosition - _touchStartPosition;
+      final dragDistance = dragOffset.distance;
+      final isHorizontalSwipe = dragOffset.dx.abs() > dragOffset.dy.abs();
+
+      setState(() {
+        _isTouchActive = false;
+        _rubberBandOffset = Offset.zero;
+      });
+
+      if (_isExpanded && isHorizontalSwipe) {
+        // Handle momentum-based navigation in expanded state
+        final absVelocity = _velocity.abs();
+
+        if (absVelocity > _momentumThreshold) {
+          // Start momentum scrolling
+          _startMomentumScroll(_velocity);
+        } else {
+          // Traditional snap behavior for slow swipes
+          final shouldSnap = dragOffset.dx.abs() > _swipeSnapThreshold;
+
+          if (shouldSnap) {
+            if (dragOffset.dx > 0) {
+              // Swiped right - go to previous card
+              _previousCard();
+            } else {
+              // Swiped left - go to next card
+              _nextCard();
+            }
+          }
+
+          // Reset swipe offset with animation
+          setState(() {
+            _swipeOffset = 0.0;
+          });
+          _calculateCardPositions(); // Animate back to position
+        }
+      } else if (_isStacked || _isExploded) {
+        // Handle rubber band interaction for stacked/exploded states
+        if (_touchInsideHoverRegion) {
+          // Touch ended within hover region - always expand regardless of drag distance
+          _transitionToExpanded();
+        } else {
+          // Touch ended outside region - return to stacked
+          _handleCardHover(false, -1);
+        }
+      }
+
+      _calculateCardPositions(); // Reset positions
+    }
+  }
+
+  void _handlePanCancel() {
+    if (_isTouchActive) {
+      setState(() {
+        _isTouchActive = false;
+        _rubberBandOffset = Offset.zero;
+        _swipeOffset = 0.0;
+        _momentumTiltDirection = 0.0; // Clear any momentum tilt
+        _touchInsideHoverRegion = false; // Set to false when cancelled
+      });
+
+      if (_isStacked || _isExploded) {
+        _handleCardHover(false, -1);
+      }
+
+      _calculateCardPositions();
+    }
+  }
+
+  void _startMomentumScroll(double initialVelocity) {
+    if (_isMomentumScrolling) return; // Prevent multiple momentum scrolls
+
+    setState(() {
+      _isMomentumScrolling = true;
+      // Set tilt direction based on initial velocity direction
+      _momentumTiltDirection =
+          initialVelocity < 0 ? -0.5 : 0.5; // Subtle directional tilt
+    });
+
+    // Apply dampening to initial velocity to make momentum less aggressive
+    final dampedVelocity = initialVelocity * (1.0 - _momentumDamping);
+
+    // Calculate how many cards to scroll through based on dampened velocity
+    final momentumDistance =
+        (dampedVelocity * dampedVelocity) / (2 * (1 - _friction) * 800);
+    final cardsToScroll = (momentumDistance / _cardSpacing).round().clamp(
+      1,
+      _maxMomentumCards,
+    );
+    final direction =
+        initialVelocity < 0 ? -1 : 1; // -1 for left (next), 1 for right (prev)
+
+    // Animate through multiple cards with dampened velocity
+    _animateMomentumScroll(cardsToScroll, direction, dampedVelocity);
+  }
+
+  void _animateMomentumScroll(
+    int cardsToScroll,
+    int direction,
+    double currentVelocity,
+  ) {
+    if (cardsToScroll <= 0 || currentVelocity.abs() < 100) {
+      // Momentum finished, reset state
+      setState(() {
+        _isMomentumScrolling = false;
+        _swipeOffset = 0.0;
+        _velocity = 0.0;
+        _momentumTiltDirection = 0.0; // Clear momentum tilt
+      });
+      _calculateCardPositions();
+      return;
+    }
+
+    // Move to next card
+    if (direction > 0) {
+      _previousCard();
+    } else {
+      _nextCard();
+    }
+
+    // Apply friction to velocity (more aggressive decay)
+    final newVelocity = currentVelocity * _friction;
+
+    // Continue momentum with configurable delay (longer delay = slower)
+    Future.delayed(Duration(milliseconds: _momentumDelayMs), () {
+      if (_isMomentumScrolling) {
+        _animateMomentumScroll(cardsToScroll - 1, direction, newVelocity);
+      }
+    });
+  }
+
   // Helper methods for hover effects
   double _getCardShadowOpacity(int index) {
     // Only apply hover shadow in scattered state, not stacked (to avoid cumulative darkness)
@@ -343,6 +692,10 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
               if (_screenSize !=
                   Size.zero) // Only show cards when positions are calculated
                 ..._buildCardsWithZOrder(),
+
+              // Debug: Show touch cancel threshold when touching in exploded state
+              if (_isTouchActive && _isExploded && _touchInsideHoverRegion)
+                _buildTouchThresholdIndicator(),
 
               // State indicator
               Positioned(
@@ -456,13 +809,23 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
         offset: Offset(0, -zIndex * 0.1), // Subtle z-offset for layering
         child: MouseRegion(
           onEnter: (_) {
-            _handleCardHover(true, index);
+            // Only trigger mouse hover if not actively touching
+            if (!_isTouchActive) {
+              _handleCardHover(true, index);
+            }
           },
           onExit: (_) {
-            _handleCardHover(false, index);
+            // Only cancel mouse hover if not actively touching
+            if (!_isTouchActive) {
+              _handleCardHover(false, index);
+            }
           },
           child: GestureDetector(
             onTap: () => _handleCardTap(index),
+            onPanStart: _handlePanStart,
+            onPanUpdate: _handlePanUpdate,
+            onPanEnd: _handlePanEnd,
+            onPanCancel: _handlePanCancel,
             child: AnimatedContainer(
               duration: duration,
               curve: springCurve,
@@ -675,6 +1038,57 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildTouchThresholdIndicator() {
+    return Stack(
+      children: [
+        // Circular boundary indicator
+        Positioned(
+          left: _touchStartPosition.dx - _touchCancelThreshold,
+          top: _touchStartPosition.dy - _touchCancelThreshold,
+          child: Container(
+            width: _touchCancelThreshold * 2,
+            height: _touchCancelThreshold * 2,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color:
+                    _touchInsideHoverRegion
+                        ? Colors.green.withOpacity(0.6)
+                        : Colors.red.withOpacity(0.6),
+                width: 2,
+              ),
+              color:
+                  _touchInsideHoverRegion
+                      ? Colors.green.withOpacity(0.1)
+                      : Colors.red.withOpacity(0.1),
+            ),
+          ),
+        ),
+        // Text indicator
+        Positioned(
+          top: 100,
+          left: 40,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.7),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              'Cancel Distance: ${_touchCancelThreshold.toInt()}px',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.white,
+                letterSpacing: 1.0,
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
