@@ -694,8 +694,8 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
                 ..._buildCardsWithZOrder(),
 
               // Debug: Show touch cancel threshold when touching in exploded state
-              if (_isTouchActive && _isExploded && _touchInsideHoverRegion)
-                _buildTouchThresholdIndicator(),
+              // if (_isTouchActive && _isExploded && _touchInsideHoverRegion)
+              //   _buildTouchThresholdIndicator(),
 
               // State indicator
               Positioned(
