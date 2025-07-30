@@ -372,8 +372,6 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
       _isExploded = true;
       _isStacked = false;
       _isExpanded = false;
-      _isTouchActive =
-          false; // Ensure hover detection works after state transition
     });
     _calculateCardPositions();
   }
