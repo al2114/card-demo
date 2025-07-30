@@ -105,10 +105,11 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
   // Momentum tilt direction for visual feedback
   double _momentumTiltDirection = 0.0; // -1 for left, 1 for right, 0 for none
 
-  // Touch region tracking for hover cancellation
-  final double _touchCancelThreshold =
-      200.0; // Distance in pixels to cancel hover effect
-  bool _touchInsideHoverRegion = true;
+  // Touch region tracking with three-tier thresholds
+  final double _expandThreshold = 100.0; // < 100px = expand
+  final double _collapseThreshold =
+      200.0; // 100-200px = collapse, >200px = immediate cancel
+  bool _touchInsideActiveRegion = true;
   // Track if initial animation should run
   bool _shouldAnimateInitialAppearance = true;
   bool _hasCompletedInitialDelay = false;
@@ -418,6 +419,26 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
     }
   }
 
+  void _handleTapDown(TapDownDetails details) {
+    setState(() {
+      _isTouchActive = true;
+      _touchStartPosition = details.globalPosition;
+      _currentTouchPosition = details.globalPosition;
+      _rubberBandOffset = Offset.zero;
+      _swipeOffset = 0.0;
+      _velocity = 0.0;
+      _lastPanUpdateTime = 0.0;
+      _isMomentumScrolling = false;
+      _momentumTiltDirection = 0.0;
+      _touchInsideActiveRegion = true; // Reset touch region tracking
+    });
+
+    if (_isStacked) {
+      _handleCardHover(true, -1); // Trigger exploded state
+      _calculateCardPositions(); // Ensure immediate visual update
+    }
+  }
+
   // Touch gesture handlers for rubber band effect in exploded state and swipe navigation in expanded state
   void _handlePanStart(DragStartDetails details) {
     setState(() {
@@ -430,11 +451,12 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
       _lastPanUpdateTime = 0.0;
       _isMomentumScrolling = false;
       _momentumTiltDirection = 0.0;
-      _touchInsideHoverRegion = true; // Reset touch region tracking
+      _touchInsideActiveRegion = true; // Reset touch region tracking
     });
 
     if (_isStacked) {
       _handleCardHover(true, -1); // Trigger exploded state
+      _calculateCardPositions(); // Ensure immediate visual update
     }
   }
 
@@ -451,26 +473,26 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
           final dragOffset = _currentTouchPosition - _touchStartPosition;
           final dragDistance = dragOffset.distance;
 
-          // Check if touch is still within hover region
-          final stillInRegion = dragDistance <= _touchCancelThreshold;
-
-          if (_touchInsideHoverRegion != stillInRegion) {
-            _touchInsideHoverRegion = stillInRegion;
-
-            if (!stillInRegion) {
-              // Moved out of hover region - cancel exploded state
+          // Three-tier threshold system
+          if (dragDistance > _collapseThreshold) {
+            // Zone 3: >200px - Immediate cancel to stacked
+            if (_touchInsideActiveRegion) {
+              _touchInsideActiveRegion = false;
               _handleCardHover(false, -1);
+              _rubberBandOffset = Offset.zero;
             }
-          }
+          } else {
+            // Zone 1 (<100px) and Zone 2 (100-200px) - Stay in exploded state
+            if (!_touchInsideActiveRegion) {
+              _touchInsideActiveRegion = true;
+              _handleCardHover(true, -1);
+            }
 
-          // Apply rubber band effect only if still in region
-          if (_touchInsideHoverRegion) {
+            // Apply rubber band effect for both zones
             _rubberBandOffset = Offset(
               dragOffset.dx * _rubberBandStrength,
               dragOffset.dy * _rubberBandStrength,
             );
-          } else {
-            _rubberBandOffset = Offset.zero;
           }
         });
         _calculateCardPositions(); // Recalculate positions with rubber band offset
@@ -537,12 +559,15 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
           _calculateCardPositions(); // Animate back to position
         }
       } else if (_isStacked || _isExploded) {
-        // Handle rubber band interaction for stacked/exploded states
-        if (_touchInsideHoverRegion) {
-          // Touch ended within hover region - always expand regardless of drag distance
+        // Handle three-tier threshold system on release
+        if (dragDistance < _expandThreshold) {
+          // Zone 1: <100px - Expand to full view
           _transitionToExpanded();
+        } else if (dragDistance <= _collapseThreshold) {
+          // Zone 2: 100-200px - Return to stacked
+          _handleCardHover(false, -1);
         } else {
-          // Touch ended outside region - return to stacked
+          // Zone 3: >200px - Already cancelled during drag, just ensure stacked
           _handleCardHover(false, -1);
         }
       }
@@ -558,7 +583,7 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
         _rubberBandOffset = Offset.zero;
         _swipeOffset = 0.0;
         _momentumTiltDirection = 0.0; // Clear any momentum tilt
-        _touchInsideHoverRegion = false; // Set to false when cancelled
+        _touchInsideActiveRegion = false; // Set to false when cancelled
       });
 
       if (_isStacked || _isExploded) {
@@ -822,7 +847,7 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
           },
           child: GestureDetector(
             onTap: () => _handleCardTap(index),
-            onPanStart: _handlePanStart,
+            onTapDown: _handleTapDown,
             onPanUpdate: _handlePanUpdate,
             onPanEnd: _handlePanEnd,
             onPanCancel: _handlePanCancel,
@@ -1044,26 +1069,41 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
   Widget _buildTouchThresholdIndicator() {
     return Stack(
       children: [
-        // Circular boundary indicator
+        // Three-tier threshold indicators
+        // Zone 1: Expand threshold (100px)
         Positioned(
-          left: _touchStartPosition.dx - _touchCancelThreshold,
-          top: _touchStartPosition.dy - _touchCancelThreshold,
+          left: _touchStartPosition.dx - _expandThreshold,
+          top: _touchStartPosition.dy - _expandThreshold,
           child: Container(
-            width: _touchCancelThreshold * 2,
-            height: _touchCancelThreshold * 2,
+            width: _expandThreshold * 2,
+            height: _expandThreshold * 2,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: Colors.green.withOpacity(0.8),
+                width: 2,
+              ),
+              color: Colors.green.withOpacity(0.1),
+            ),
+          ),
+        ),
+        // Zone 2: Collapse threshold (200px)
+        Positioned(
+          left: _touchStartPosition.dx - _collapseThreshold,
+          top: _touchStartPosition.dy - _collapseThreshold,
+          child: Container(
+            width: _collapseThreshold * 2,
+            height: _collapseThreshold * 2,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               border: Border.all(
                 color:
-                    _touchInsideHoverRegion
-                        ? Colors.green.withOpacity(0.6)
+                    _touchInsideActiveRegion
+                        ? Colors.orange.withOpacity(0.6)
                         : Colors.red.withOpacity(0.6),
                 width: 2,
               ),
-              color:
-                  _touchInsideHoverRegion
-                      ? Colors.green.withOpacity(0.1)
-                      : Colors.red.withOpacity(0.1),
+              color: Colors.transparent,
             ),
           ),
         ),
@@ -1078,7 +1118,7 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              'Cancel Distance: ${_touchCancelThreshold.toInt()}px',
+              'Thresholds: ${_expandThreshold.toInt()}px (expand) | ${_collapseThreshold.toInt()}px (cancel)',
               style: const TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
