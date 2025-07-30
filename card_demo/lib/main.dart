@@ -164,17 +164,20 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
             i - _activeCard; // Position relative to active card
 
         final baseY = center.dy;
+        final activeOffset =
+            i == _activeCard
+                ? -12.0
+                : 0.0; // Active card positioned 12px higher
         final hoverOffset =
             (i == _hoveredCard && _isExpanded)
                 ? -8.0
                 : 0.0; // Move up 8px on hover
         _cardPositions[i] = Offset(
           center.dx + (relativePosition * spacing) + _swipeOffset,
-          baseY + hoverOffset,
+          baseY + activeOffset + hoverOffset,
         );
         // Base rotation for inactive cards
-        final baseRotation =
-            i == _activeCard ? 0.0 : relativePosition.sign * 0.15;
+        final baseRotation = i == _activeCard ? 0.0 : relativePosition * 0.1;
 
         // Add swipe tilt when dragging or momentum tilt when scrolling
         double swipeTilt = 0.0;
@@ -346,6 +349,8 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
       _isStacked = true;
       _isExpanded = false;
       _isExploded = false;
+      _isTouchActive =
+          false; // Ensure hover detection works after state transition
     });
     _calculateCardPositions();
   }
@@ -356,6 +361,8 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
       _isStacked = false;
       _isExploded = false;
       _activeCard = 2; // Start with center card
+      _isTouchActive =
+          false; // Ensure hover detection works after state transition
     });
     _calculateCardPositions();
   }
@@ -365,6 +372,8 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
       _isExploded = true;
       _isStacked = false;
       _isExpanded = false;
+      _isTouchActive =
+          false; // Ensure hover detection works after state transition
     });
     _calculateCardPositions();
   }
@@ -376,6 +385,8 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
       // In expanded view, clicking selects the card
       setState(() {
         _activeCard = cardIndex;
+        _isTouchActive =
+            false; // Ensure hover detection works after card selection
       });
       _calculateCardPositions();
     }
@@ -405,6 +416,8 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
     if (_isExpanded) {
       setState(() {
         _activeCard = (_activeCard + 1) % 5;
+        _isTouchActive =
+            false; // Ensure hover detection works after card change
       });
       _calculateCardPositions();
     }
@@ -414,6 +427,8 @@ class _PhysicsCardDemoState extends State<PhysicsCardDemo> {
     if (_isExpanded) {
       setState(() {
         _activeCard = (_activeCard - 1 + 5) % 5;
+        _isTouchActive =
+            false; // Ensure hover detection works after card change
       });
       _calculateCardPositions();
     }
